@@ -31,16 +31,27 @@ class ModelHandler(BaseHandler):
 
         properties = context.system_properties
         model_dir = properties.get("model_dir")
+
         from model import MatrixFactorization
+        # load model dic
         serialized_file = self.manifest['model']['serializedFile']
         model_pt_path = os.path.join(model_dir, serialized_file)
-        
         state_dict = torch.load(model_pt_path)
-        with open('/Users/changruimeng/Workspace/MovieRecommendation/data/mapping.pkl', 'rb') as f:
+        
+        # load extra data
+        mapping_file = os.path.join(model_dir, "mapping.pkl")   
+        with open(mapping_file, 'rb') as f:
             dic = pickle.load(f)
-        user_map, movie_map = dic['user_map'], dic['movie_map']
-        n_users, n_movies = len(user_map), len(movie_map)
-        self.model = MatrixFactorization(n_users, n_movies, user_map, movie_map)
+        self.user_map = dic['user_map']
+        self.movie_map = dic['movie_map']
+        self.users = dic['users']
+        self.movies = dic['movies']
+        n_users, n_movies = len(self.user_map), len(self.movie_map)
+        self.n_users = n_users
+        self.n_movies = n_movies
+
+        # load model
+        self.model = MatrixFactorization(n_users, n_movies)
         self.model.load_state_dict(state_dict)
         self.model.eval()
 
@@ -53,7 +64,7 @@ class ModelHandler(BaseHandler):
         :return: list of preprocessed model input data
         """
         # Transform user id to index
-        input = data[0].get("user_id")
+        input = data[0].get("data")
         if input is None:
             input = data[0].get("body")
         user_id = input['user_id']
@@ -67,15 +78,18 @@ class ModelHandler(BaseHandler):
         :return: list of inference output in NDArray
         """
         # if user not exist, return null
-        # if model_input not in self.model.user_map.keys():
-        #     return None
-        # user_idx = self.model.user_map[model_input]
-        # user_idxs = np.ones(self.model.n_movies) * user_idx
-        # movie_idxs = torch.tensor(np.arange(self.model.n_movies))
-        # data = np.hstack([user_idxs, movie_idxs]).T
-        # model_output = self.model.forward(data)
-        # return model_output
-        return None
+        if model_input not in self.user_map.keys():
+            return None
+        # get user index
+        user_idx = self.user_map[model_input]
+        # construct combination of user with all movies
+        user_idxs = np.ones(self.n_movies) * user_idx
+        movie_idxs = np.arange(self.n_movies)
+        data = torch.tensor(np.vstack([user_idxs, movie_idxs]).T, dtype=torch.long)
+        # predict rating for all movies
+        with torch.no_grad():
+            model_output = self.model.forward(data)
+        return model_output
 
     def postprocess(self, inference_output):
         """
@@ -84,7 +98,15 @@ class ModelHandler(BaseHandler):
         :return: list of predict results
         """
         # Take output from network and post-process to desired format
-        return inference_output
+        # sort the ratings, return indexes in descending order
+        ratings = inference_output.numpy()
+        inds = np.argsort(ratings)[::-1]
+        logger.log(logging.INFO, inds)
+        logger.log(logging.INFO, ratings[inds])
+        # get name for 5 highest rating movie
+        movie_inds = inds[:5]
+        movie_names = [self.movies[i] for i in movie_inds]
+        return [movie_names]
 
     def handle(self, data, context):
         """
