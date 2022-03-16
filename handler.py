@@ -68,7 +68,16 @@ class ModelHandler(BaseHandler):
         if input is None:
             input = data[0].get("body")
         user_id = input['user_id']
-        return user_id
+        # if user not exist, return null
+        if user_id not in self.user_map.keys():
+            return None
+        # get user index
+        user_idx = self.user_map[user_id]
+        # construct combination of user with all movies
+        user_idxs = np.ones(self.n_movies) * user_idx
+        movie_idxs = np.arange(self.n_movies)
+        data = torch.tensor(np.vstack([user_idxs, movie_idxs]).T, dtype=torch.long)
+        return data
 
 
     def inference(self, model_input):
@@ -77,18 +86,9 @@ class ModelHandler(BaseHandler):
         :param model_input: transformed model input data
         :return: list of inference output in NDArray
         """
-        # if user not exist, return null
-        if model_input not in self.user_map.keys():
-            return None
-        # get user index
-        user_idx = self.user_map[model_input]
-        # construct combination of user with all movies
-        user_idxs = np.ones(self.n_movies) * user_idx
-        movie_idxs = np.arange(self.n_movies)
-        data = torch.tensor(np.vstack([user_idxs, movie_idxs]).T, dtype=torch.long)
         # predict rating for all movies
         with torch.no_grad():
-            model_output = self.model.forward(data)
+            model_output = self.model.forward(model_input)
         return model_output
 
     def postprocess(self, inference_output):
@@ -117,5 +117,8 @@ class ModelHandler(BaseHandler):
         :return: prediction output
         """
         model_input = self.preprocess(data)
+        # if user_id not exist
+        if model_input is None:
+            return ['invalid user_id']
         model_output = self.inference(model_input)
         return self.postprocess(model_output)
